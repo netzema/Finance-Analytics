@@ -13,7 +13,6 @@ import constants as constants
 
 today = pd.Timestamp.today()
 
-
 # Precompute month options
 df_init = load_account_data(constants.ACCOUNTS)
 df_init = df_init.with_columns(
@@ -118,41 +117,55 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
         selected_month = df["year_month"].max()
 
     selected_month = pd.to_datetime(selected_month)
+    this_year = selected_month.year
     sel_month_str = selected_month.strftime("%Y-%m")
     df = df.filter(pl.col("year_month").str.strptime(pl.Date, "%Y-%m") <= selected_month)
 
     # Exclude transfers for expense/income
     non_transfer = df.filter(pl.col("category") != "Transfer")
 
+    # net expense per category
+    cat_monthly_net = (
+        non_transfer
+        .group_by(["year_month", "category"])
+        .agg(pl.sum("amount").alias("net"))  # net = income (+) minus expense (-)
+    )
+
     # Summary metrics
+    # Monthly income/expense from netted categories
+    monthly_stats = (
+        cat_monthly_net
+        .group_by("year_month")
+        .agg([
+            pl.col("net").filter(pl.col("category").str.to_lowercase().str.contains("income")).sum().alias("monthly_income"),
+            (pl.col("net").filter(~pl.col("category").str.to_lowercase().str.contains("income"))).sum().alias("monthly_expense")
+        ])
+        .sort("year_month")
+    )
 
-    total_income = non_transfer.filter(pl.col("amount") > 0).select(pl.sum("amount")).item()
-    total_expenses = abs(non_transfer.filter(pl.col("amount") < 0).select(pl.sum("amount")).item())
-    total_savings = abs(df.filter(pl.col("category") == "Transfer").select(pl.sum("amount")).item())
-    savings_rate = (total_savings / total_income * 100) if total_income else 0
+    total_income = monthly_stats["monthly_income"].sum() or 0.0
+    total_expenses = monthly_stats["monthly_expense"].sum() or 0.0
 
-    # Monthly averages
-    monthly_stats = non_transfer.with_columns([
-        pl.col("year_month"),
-        pl.when(pl.col("amount") > 0).then(pl.col("amount")).otherwise(0).alias("income"),
-        pl.when(pl.col("amount") < 0).then(pl.col("amount")).otherwise(0).alias("expense")
-    ]).group_by("year_month").agg([
-        pl.sum("income").alias("monthly_income"),
-        pl.sum("expense").alias("monthly_expense")
-    ]).sort("year_month")
+    total_savings = abs(df.filter(pl.col("category") == "Transfer").select(pl.sum("amount")).item() or 0.0)
+    savings_rate = (total_savings / total_income * 100) if total_income else 0.0
 
-    monthly_avg_income = monthly_stats.select(pl.mean("monthly_income")).item()
-    monthly_avg_expense = monthly_stats.select(pl.mean("monthly_expense")).item()
+    monthly_avg_income  = monthly_stats.select(pl.mean("monthly_income")).item() or 0.0
+    monthly_avg_expense = monthly_stats.select(pl.mean("monthly_expense")).item() or 0.0
 
     # Cumulative expenses this month
     th_month_filter = (
         (non_transfer["bookingDate"].dt.month() == selected_month.month) &
-        (non_transfer["bookingDate"].dt.year() == selected_month.year)
+        (non_transfer["bookingDate"].dt.year() == this_year)
     )
-    cum_df = non_transfer.filter(th_month_filter & (pl.col("amount") < 0))
-    cum_df = cum_df.sort("bookingDate").with_columns(
-        pl.col("amount").cum_sum().alias("cumulative")
-    ).to_pandas()
+
+    # Use raw amounts (include positives so reimbursements reduce the curve)
+    cum_df = (
+        non_transfer
+        .filter(th_month_filter)
+        .sort("bookingDate")
+        .with_columns(pl.col("amount").cum_sum().alias("cumulative"))
+        .to_pandas()
+    )
 
     # Monthly income vs expenses trend for plotting
 
@@ -165,68 +178,168 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     # Top categories
     this_month = non_transfer.filter(
         (pl.col("bookingDate").dt.month() == selected_month.month) & 
-        (pl.col("bookingDate").dt.year() == selected_month.year)
+        (pl.col("bookingDate").dt.year() == this_year)
     )
 
-    top_all = non_transfer.filter(pl.col("amount") < 0).group_by("category").agg(pl.sum("amount").abs().alias("total")).sort("total").tail(10).to_pandas()
-    top_this_month = this_month.filter(pl.col("amount") < 0).group_by("category").agg(pl.sum("amount").abs().alias("total")).sort("total").tail(10).to_pandas()
+    # top categories (all time)
+    top_all = (
+        non_transfer
+        .with_columns(pl.col("bookingDate").dt.year() == this_year)
+        .group_by("category")
+        .agg(pl.sum("amount").alias("net"))
+        .with_columns((-pl.col("net")).alias("expense"))  # only categories net-negative
+        .filter(pl.col("expense") > 0)
+        .sort("expense", descending=False)
+        .tail(10)
+        .select([pl.col("category"), pl.col("expense").alias("total")])
+        .to_pandas()
+    )
+
+    # top categories (this month)
+    this_month_net = (
+        this_month
+        .group_by("category")
+        .agg(pl.sum("amount").alias("net"))
+        .with_columns((-pl.col("net")).alias("expense"))
+        .filter(pl.col("expense") > 0)
+    )
+
+    top_this_month = (
+        this_month_net
+        .sort("expense", descending=False)
+        .tail(10)
+        .select([pl.col("category"), pl.col("expense").alias("total")])
+        .to_pandas()
+    )
+
 
     # Monthly average per category for top 10 this month
     # Compute average monthly expense per category over all months
-    cat_monthly = non_transfer.filter(pl.col("amount") < 0).with_columns(
-        pl.col("year_month"),
-        pl.col("amount").abs().alias("expense")
-    ).group_by(["category", "year_month"]).agg(pl.sum("expense").alias("monthly_cat_expense"))
-    # Average across months
-    avg_cat = cat_monthly.group_by("category").agg(pl.mean("monthly_cat_expense").alias("avg_monthly_expense")).to_pandas()
-    # Select top10 by last30 total
-    topcats = top_this_month["category"].tolist()
-    avg_top = avg_cat[avg_cat["category"].isin(topcats)]
-    last30_df = top_this_month.set_index("category")["total"].rename_axis("category").reset_index()
-    grouped_compare = pd.merge(avg_top, last30_df, on="category")  # columns: category, avg_monthly_expense, total
+    # Net by category per month
+    cat_monthly = cat_monthly_net  # reuse from step (1)
 
-    # Trends: compare current month to avg of previous 3 months
-    # Prepare monthly cat expenses pivot
-    pivot = cat_monthly.to_pandas()
-    pivot["year_month"] = pd.to_datetime(pivot["year_month"]+"-01")
-    # Get current month and previous
+    # Expense component per (category, month) = -min(net, 0)
+    cat_monthly_exp = cat_monthly.with_columns(
+        (-pl.col("net")).alias("monthly_cat_expense")
+    )
+
+    # Average across months per category
+    avg_cat = (
+        cat_monthly_exp
+        .group_by("category")
+        .agg(pl.mean("monthly_cat_expense").alias("avg_monthly_expense"))
+        .to_pandas()
+    )
+
+    # Current month vs avg of prev 3 months
+    # to pandas + month-start timestamps
+    pivot = cat_monthly_exp.to_pandas()
+    pivot["year_month"] = pd.to_datetime(pivot["year_month"] + "-01")
+
     curr = pd.Timestamp(selected_month.year, selected_month.month, 1)
-    prev3 = pivot[pivot["year_month"] < curr].copy()
-    # Compute avg of last 3 months per category
-    prev3_avgs = prev3.groupby("category").tail(3).groupby("category")["monthly_cat_expense"].mean().rename("avg_prev3").reset_index()
-    # Current month expense per category
-    curr_exp = pivot[pivot["year_month"] == curr].groupby("category")["monthly_cat_expense"].sum().rename("curr_expense").reset_index()
+
+    # pivot to months x categories, fill missing with 0
+    piv = pivot.pivot_table(
+        index="year_month",
+        columns="category",
+        values="monthly_cat_expense",
+        aggfunc="sum",
+        fill_value=0,
+    )
+
+    # reindex to a COMPLETE monthly index up to the PREVIOUS month
+    if len(piv.index):
+        start = piv.index.min().to_period("M").to_timestamp()
+    else:
+        start = curr - pd.offsets.MonthBegin(3)  # fallback if no data
+    prev_month = curr - pd.offsets.MonthBegin(1)
+    full_idx = pd.period_range(
+        start=start.to_period("M"),
+        end=prev_month.to_period("M"),
+        freq="M"
+    ).to_timestamp()
+
+    piv = piv.reindex(full_idx, fill_value=0)
+
+    # average of the last 3 months BEFORE current (use shorter window if not enough history)
+    window = min(3, len(piv.index))
+    prev3_avgs = piv.tail(window).mean().reset_index()
+    prev3_avgs.columns = ["category", "avg_prev3"]
+
+    # current month expense per category
+    curr_exp = (
+        pivot[pivot["year_month"] == curr]
+        .groupby("category")["monthly_cat_expense"]
+        .sum()
+        .rename("curr_expense")
+        .reset_index()
+    )
+
+    # trends using the proper 3-mo avg
     trend_df = pd.merge(curr_exp, prev3_avgs, on="category", how="inner")
     trend_df["abs_change"] = trend_df["curr_expense"] - trend_df["avg_prev3"]
-    trend_df["pct_change"] = trend_df["abs_change"] / trend_df["avg_prev3"] * 100
-    # Top 3 inc and dec
+    # safe % change (avoid div-by-zero)
+    trend_df["pct_change"] = trend_df.apply(
+        lambda r: (r["abs_change"] / r["avg_prev3"] * 100) if r["avg_prev3"] else 0.0, axis=1
+    )
+
     top_inc = trend_df.sort_values("pct_change", ascending=False).head(3)
     top_dec = trend_df.sort_values("pct_change").head(3)
 
-    # Compute spent per budget category this month
+    # === Use 3-mo avg for the grouped compare chart as well ===
+    topcats = top_this_month["category"].tolist()
+    avg_top = (
+        prev3_avgs[prev3_avgs["category"].isin(topcats)]
+        .rename(columns={"avg_prev3": "avg_monthly_expense"})
+    )
+    last30_df = (
+        top_this_month.set_index("category")["total"]
+        .rename_axis("category")
+        .reset_index()
+    )
+    grouped_compare = pd.merge(avg_top, last30_df, on="category", how="inner")
+
+    # Net by category for the selected month
+    month_net = (
+        non_transfer
+        .filter(
+            (pl.col('bookingDate').dt.month() == selected_month.month) &
+            (pl.col('bookingDate').dt.year()  == this_year)
+        )
+        .group_by("category")
+        .agg(pl.sum("amount").alias("net"))
+    )
+
+    # Helper to get expense (>=0) from net
+    # expense = -min(net, 0)
+    month_expenses = month_net.with_columns(
+        (-pl.col("net")).alias("expense")
+    )
+
     spent = {}
-    for cat, budget in budgets.items():
-        if cat == 'Other':
-            # All categories not explicitly listed
-            spent_amt = non_transfer.filter(
-                (pl.col('bookingDate').dt.month() == selected_month.month) &
-                (pl.col('bookingDate').dt.year() == selected_month.year) &
-                (pl.col('amount') < 0) &
-                (~pl.col('category').is_in(list(budgets.keys())))
-            ).select(pl.sum('amount').abs()).item() or 0.0
-        else:
-            spent_amt = non_transfer.filter(
-                (pl.col('bookingDate').dt.month() == selected_month.month) &
-                (pl.col('bookingDate').dt.year() == selected_month.year) &
-                (pl.col('amount') < 0) &
-                (pl.col('category') == cat)
-            ).select(pl.sum('amount').abs()).item() or 0.0
+    budget_categories = list(budgets.keys())
+    known_cats = pl.Series(budget_categories)
+
+    # Map explicit categories
+    for cat in budget_categories:
+        if cat == "Other":
+            continue
+        spent_amt = month_expenses.filter(pl.col("category") == cat).select(pl.sum("expense")).item() or 0.0
         spent[cat] = spent_amt
-    # Prepare budget DataFrame
+
+    # "Other" = sum of expense for cats not in budgets
+    other_amt = (
+        month_expenses
+        .filter(~pl.col("category").is_in(known_cats))
+        .select(pl.sum("expense"))
+        .item() or 0.0
+    )
+    spent["Other"] = other_amt
+
     budget_df = pd.DataFrame({
         'Category': list(budgets.keys()),
         'Budget': list(budgets.values()),
-        'Spent': [spent[cat] for cat in budgets.keys()]
+        'Spent': [spent[c] for c in budgets.keys()]
     })
     budget_df['Remaining'] = budget_df['Budget'] - budget_df['Spent']
 
@@ -258,7 +371,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
 
         # Top Categories Charts
         dbc.Row([
-            dbc.Col(dcc.Graph(id='top-all-graph', figure=px.bar(top_all, x='category', y='total', title='Top 10 Categories (All Time)', labels={'total':'€'}).update_layout(template='plotly_dark'))),
+            dbc.Col(dcc.Graph(id='top-all-graph', figure=px.bar(top_all, x='category', y='total', title=f'Top 10 Categories {this_year}', labels={'total':'€'}).update_layout(template='plotly_dark'))),
             dbc.Col(dcc.Graph(id='top-30-graph', figure=px.bar(top_this_month, x='category', y='total', title=f'Top 10 Categories ({sel_month_str})', labels={'total':'€'}).update_layout(template='plotly_dark')))    
         ]),
 
@@ -400,10 +513,12 @@ def display_transactions(non_transfer, this_month, selected_cats, selected_month
             (pl.col('category').is_in(selected_cats))
         )
 
-        total = (non_transfer
+        total = (
+            non_transfer
             .filter(pl.col('category').is_in(selected_cats))
-            .select(pl.sum('amount').abs())
-            .item() or 0.0)
+            .select(pl.sum('amount'))
+            .item() or 0.0
+        )
         first_month = non_transfer["bookingDate"].dt.month().min()
         last_month = selected_month.month
         month_diff = max(1, last_month - first_month + 1)
@@ -442,8 +557,8 @@ def display_transactions(non_transfer, this_month, selected_cats, selected_month
             cat_cond = (pl.col("category") == cat) if cat != "Other" else (~pl.col("category").is_in(budgets))
             df_click = non_transfer.filter(
                 (pl.col('bookingDate').dt.month() == selected_month.month) &
-                (pl.col('bookingDate').dt.year() == selected_month.year) &
-                (pl.col('amount') < 0) &
+                (pl.col('bookingDate').dt.year() == this_year) &
+                # (pl.col('amount') < 0) &
                 cat_cond
             )
 
