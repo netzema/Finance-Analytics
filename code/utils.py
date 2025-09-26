@@ -184,3 +184,14 @@ def load_account_data(accounts):
         return pl.concat(dfs, how="vertical")
     else:
         return pl.DataFrame([])
+
+def load_savings_csv(path: str | Path) -> pl.DataFrame:
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return pl.DataFrame(schema={"bookingDate": pl.Date, "amount": pl.Float64})
+    df = pl.read_csv(p, infer_schema_length=0).with_columns([
+        pl.col("bookingDate").str.strptime(pl.Date, "%Y-%m-%d", strict=False),
+        pl.col("amount").cast(pl.Float64)
+    ])
+    # only keep what we need
+    return df.select(["bookingDate", "amount"]).drop_nulls("bookingDate")

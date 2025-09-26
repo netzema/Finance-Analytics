@@ -5,6 +5,8 @@ import sqlite3
 import json
 from pathlib import Path
 import subprocess
+from flask import request
+import os
 
 # Paths
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -17,6 +19,14 @@ app = dash.Dash(__name__)
 app.title = "Transaction Labeler"
 
 # Helper functions
+def _shutdown_server():
+    func = request.environ.get("werkzeug.server.shutdown")
+    if func:
+        func()
+    else:
+        # Fallback if not running with the Werkzeug dev server
+        os._exit(0)
+        
 def load_next_unlabeled_transaction():
     conn = sqlite3.connect(DB_PATH)
     df = pl.read_database("SELECT * FROM transactions WHERE category IS NULL LIMIT 1", conn)
@@ -91,11 +101,21 @@ app.layout = html.Div([
     html.Button("Assign Label", id="assign-btn"),
     html.Div(id="confirm-msg"),
 
+    html.Button("Finish & Continue", id="finish-btn", style={"marginLeft": "10px"}),
+
     dcc.Interval(id="init-trigger", interval=1, max_intervals=1)
 ], className="container")
 
-
 # Callbacks
+@app.callback(
+    # Output("confirm-msg", "children"),
+    Input("finish-btn", "n_clicks"),
+    prevent_initial_call=True
+)
+def finish_flow(_):
+    _shutdown_server()
+    # return "Shutting down…"
+
 @app.callback(
     Output("transaction-display", "children"),
     Output("category-dropdown", "options"),

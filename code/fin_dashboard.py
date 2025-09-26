@@ -99,7 +99,6 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     
     # Preprocess data
     df = df.with_columns([
-        # pl.col("bookingDate").cast(pl.Utf8).str.strptime(pl.Date, "%Y-%m-%d"),
         pl.col("amount").cast(pl.Float64),
         pl.col("category").fill_null("Uncategorized")
     ]).with_columns(
@@ -110,7 +109,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     
     min_date = df["year_month"].min()
     max_date = df["year_month"].max()
-    print(f"Date range for accounts ({", ".join(selected_accounts)}):\n{min_date} - {max_date}")
+    print(f"Date range for accounts ({', '.join(selected_accounts)}):\n{min_date} - {max_date}")
 
     # Filter for selected months
     if selected_month is None:
@@ -128,7 +127,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     cat_monthly_net = (
         non_transfer
         .group_by(["year_month", "category"])
-        .agg(pl.sum("amount").alias("net"))  # net = income (+) minus expense (-)
+        .agg(pl.sum("amount").alias("net"))
     )
 
     # Summary metrics
@@ -158,17 +157,27 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
         (non_transfer["bookingDate"].dt.year() == this_year)
     )
 
-    # Use raw amounts (include positives so reimbursements reduce the curve)
+    # Use raw amounts
     cum_df = (
         non_transfer
         .filter(th_month_filter)
         .sort("bookingDate")
-        .with_columns(pl.col("amount").cum_sum().alias("cumulative"))
+        .with_columns([
+            pl.col("amount").cum_sum().alias("cumulative")
+        ])
         .to_pandas()
     )
 
-    # Monthly income vs expenses trend for plotting
+    cum_total_df = (
+        non_transfer
+        .sort("bookingDate")
+        .with_columns([
+            pl.col("amount").cum_sum().alias("cumulative")
+        ])
+        .to_pandas()
+    )
 
+    # Monthly income vs expenses trend
     monthly_trend = monthly_stats.select([
         pl.col("year_month"),
         pl.col("monthly_income").alias("total_income"),
@@ -181,13 +190,13 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
         (pl.col("bookingDate").dt.year() == this_year)
     )
 
-    # top categories (all time)
+    # top categories (this year)
     top_all = (
         non_transfer
         .with_columns(pl.col("bookingDate").dt.year() == this_year)
         .group_by("category")
         .agg(pl.sum("amount").alias("net"))
-        .with_columns((-pl.col("net")).alias("expense"))  # only categories net-negative
+        .with_columns((-pl.col("net")).alias("expense"))
         .filter(pl.col("expense") > 0)
         .sort("expense", descending=False)
         .tail(10)
@@ -216,19 +225,10 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     # Monthly average per category for top 10 this month
     # Compute average monthly expense per category over all months
     # Net by category per month
-    cat_monthly = cat_monthly_net  # reuse from step (1)
+    cat_monthly = cat_monthly_net
 
-    # Expense component per (category, month) = -min(net, 0)
     cat_monthly_exp = cat_monthly.with_columns(
         (-pl.col("net")).alias("monthly_cat_expense")
-    )
-
-    # Average across months per category
-    avg_cat = (
-        cat_monthly_exp
-        .group_by("category")
-        .agg(pl.mean("monthly_cat_expense").alias("avg_monthly_expense"))
-        .to_pandas()
     )
 
     # Current month vs avg of prev 3 months
@@ -247,11 +247,11 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
         fill_value=0,
     )
 
-    # reindex to a COMPLETE monthly index up to the PREVIOUS month
+    # reindex to a complete monthly index up to the prev month
     if len(piv.index):
         start = piv.index.min().to_period("M").to_timestamp()
     else:
-        start = curr - pd.offsets.MonthBegin(3)  # fallback if no data
+        start = curr - pd.offsets.MonthBegin(3)
     prev_month = curr - pd.offsets.MonthBegin(1)
     full_idx = pd.period_range(
         start=start.to_period("M"),
@@ -261,7 +261,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
 
     piv = piv.reindex(full_idx, fill_value=0)
 
-    # average of the last 3 months BEFORE current (use shorter window if not enough history)
+    # average of the last 3 months before current
     window = min(3, len(piv.index))
     prev3_avgs = piv.tail(window).mean().reset_index()
     prev3_avgs.columns = ["category", "avg_prev3"]
@@ -278,7 +278,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     # trends using the proper 3-mo avg
     trend_df = pd.merge(curr_exp, prev3_avgs, on="category", how="inner")
     trend_df["abs_change"] = trend_df["curr_expense"] - trend_df["avg_prev3"]
-    # safe % change (avoid div-by-zero)
+    # safe % change
     trend_df["pct_change"] = trend_df.apply(
         lambda r: (r["abs_change"] / r["avg_prev3"] * 100) if r["avg_prev3"] else 0.0, axis=1
     )
@@ -286,7 +286,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     top_inc = trend_df.sort_values("pct_change", ascending=False).head(3)
     top_dec = trend_df.sort_values("pct_change").head(3)
 
-    # === Use 3-mo avg for the grouped compare chart as well ===
+    # 3-mo avg for the grouped compare chart
     topcats = top_this_month["category"].tolist()
     avg_top = (
         prev3_avgs[prev3_avgs["category"].isin(topcats)]
@@ -311,14 +311,13 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     )
 
     # Helper to get expense (>=0) from net
-    # expense = -min(net, 0)
     month_expenses = month_net.with_columns(
         (-pl.col("net")).alias("expense")
     )
 
     spent = {}
     budget_categories = list(budgets.keys())
-    known_cats = pl.Series(budget_categories)
+    known_cats = budget_categories
 
     # Map explicit categories
     for cat in budget_categories:
@@ -343,6 +342,65 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     })
     budget_df['Remaining'] = budget_df['Budget'] - budget_df['Spent']
 
+    # Savings integration
+    # External movements from savings CSV
+    sav_ext = load_savings_csv(constants.SAVINGS_CSV_PROC_PATH).filter(
+        (pl.col("bookingDate").dt.month() <= selected_month.month) &
+        (pl.col("bookingDate").dt.year() <= selected_month.year)
+    ).rename({"amount": "delta"})
+
+    # Internal moves from main accounts: Transfer seen from checking -> invert sign
+    sav_int = (
+        df.filter(pl.col("category") == "Transfer")
+        .select([
+            pl.col("bookingDate"),
+            (-pl.col("amount")).alias("delta")
+        ])
+        .drop_nulls("bookingDate")
+    )
+
+    # Merge deltas and cumulate to a balance series
+    sav_changes = (
+        pl.concat([sav_int, sav_ext], how="vertical_relaxed")
+        .group_by("bookingDate")
+        .agg(pl.sum("delta").alias("delta"))
+        .sort("bookingDate")
+    )
+
+    if sav_changes.is_empty():
+        savings_balance_current = float(constants.SAVINGS_START)
+        sav_cum_df = pd.DataFrame({"bookingDate": [], "balance": []})
+    else:
+        sav_cum_df = (
+            sav_changes
+            .with_columns( (pl.lit(float(constants.SAVINGS_START)) + pl.col("delta").cum_sum()).alias("balance") )
+            .to_pandas()
+            .sort_values("bookingDate")
+        )
+        savings_balance_current = float(sav_cum_df["balance"].iloc[-1])
+
+    # Savings change in selected month
+    sav_month_delta = float(
+        sav_changes
+        .filter(
+            (pl.col("bookingDate").dt.year() == this_year) &
+            (pl.col("bookingDate").dt.month() == selected_month.month)
+        )
+        .select(pl.col("delta").sum())
+        .item() or 0.0
+    )
+
+    cum_net_fig = go.Figure([
+        go.Scatter(x=cum_total_df['bookingDate'], y=cum_total_df['cumulative'],
+                mode='lines', name='Cumulative Total')
+    ])
+    if len(sav_cum_df):
+        cum_net_fig.add_trace(
+            go.Scatter(x=sav_cum_df['bookingDate'], y=sav_cum_df['balance'],
+                    mode='lines', name='Savings Balance', line=dict(dash='dash'))
+        )
+    cum_net_fig.update_layout(title='Cumulative Total', template='plotly_dark')
+
     dynamic_ui = html.Div([
         # Summary Cards with monthly averages
         dbc.Row([
@@ -350,9 +408,13 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
             dbc.Col(dbc.Card([dbc.CardHeader("Total Expenses"), dbc.CardBody(html.H5(f"{total_expenses:,.2f} €"))])),
             dbc.Col(dbc.Card([dbc.CardHeader("Monthly Avg Income"), dbc.CardBody(html.H5(f"{monthly_avg_income:,.2f} €"))])),
             dbc.Col(dbc.Card([dbc.CardHeader("Monthly Avg Expense"), dbc.CardBody(html.H5(f"{abs(monthly_avg_expense):,.2f} €"))])),
-            dbc.Col(dbc.Card([dbc.CardHeader("Total Savings"), dbc.CardBody(html.H5(f"{total_savings:,.2f} €"))])),
+            dbc.Col(dbc.Card([dbc.CardHeader("Savings Balance"), dbc.CardBody(html.H5(f"{savings_balance_current:,.2f} €"))])),
+            dbc.Col(dbc.Card([dbc.CardHeader(f"Savings Δ {sel_month_str}"), dbc.CardBody(html.H5(f"{sav_month_delta:,.2f} €"))])),
             dbc.Col(dbc.Card([dbc.CardHeader("Savings Rate"), dbc.CardBody(html.H5(f"{savings_rate:.1f}%"))]))
         ], className="mb-4"),
+
+        # Cumulative Net Chart
+        dcc.Graph(id='cum-net-graph', figure=cum_net_fig),
 
         # Cumulative Expenses Chart
         dcc.Graph(
@@ -403,7 +465,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
                         'avg_prev3': 'Avg Monthly Exp (€)',
                         'curr_expense': f"{sel_month_str} Exp (€)"
                     },
-                    color_discrete_sequence=['red']  # bars in red
+                    color_discrete_sequence=['red']
                 ).update_layout(template='plotly_dark', yaxis_tickformat='.1f%%')
             )),
             dbc.Col(dcc.Graph(
@@ -423,7 +485,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
                         'avg_prev3': 'Avg Monthly Exp (€)',
                         'curr_expense': f"{sel_month_str} Exp (€)"
                     },
-                    color_discrete_sequence=['green']  # bars in green
+                    color_discrete_sequence=['green']
                 )
                 .update_layout(template='plotly_dark', yaxis_tickformat='.1f%%')
             ))
@@ -495,6 +557,8 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
     Input('budget-chart','clickData')
 )
 def display_transactions(non_transfer, this_month, selected_cats, selected_month, cum_click, trend_click, all_click, last30_click, avg_click, inc_click, dec_click, budget_click):
+    this_year = pd.to_datetime(selected_month).year
+
     # Priority: search overrides clicks
     non_transfer = pl.DataFrame(non_transfer) if non_transfer else pl.DataFrame()
     if non_transfer is not None:
