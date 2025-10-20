@@ -4,6 +4,7 @@ import webbrowser
 import subprocess
 from pathlib import Path
 from urllib.request import urlopen
+from daily import run_daily
 import argparse
 import os
 
@@ -101,7 +102,8 @@ def main():
     dash_url = f"http://127.0.0.1:{args.dash_port}/"
 
     # 0) Download + auto-label
-    subprocess.run(["bash", str(DOWNLOAD_SH)], check=True)
+    # subprocess.run(["bash", str(DOWNLOAD_SH)], check=True)
+    run_daily()
     
     # 1) Label app
     run_server(Path(args.label), label_url)
