@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parent
 LABEL_SCRIPT = ROOT / "label_app.py"
 PROCESS_SCRIPT = ROOT / "process_savings.py"
 DASHBOARD_SCRIPT = ROOT / "fin_dashboard.py"
+DOWNLOAD_SH = ROOT / "download_daily.sh"
 
 LABEL_PORT = 8050
 DASH_PORT = 8051
@@ -99,6 +100,9 @@ def main():
     label_url = f"http://127.0.0.1:{args.label_port}/"
     dash_url = f"http://127.0.0.1:{args.dash_port}/"
 
+    # 0) Download + auto-label
+    subprocess.run(["bash", str(DOWNLOAD_SH)], check=True)
+    
     # 1) Label app
     run_server(Path(args.label), label_url)
 
