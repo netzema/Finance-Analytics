@@ -1,13 +1,13 @@
 from pathlib import Path
 import os
 import sqlite3
+import config
 import requests
 from dotenv import load_dotenv
 from utils import get_access_token, fetch_transactions
 
 # Load secrets from .env
-BASE_DIR = Path(__file__).resolve().parent.parent
-ENV_PATH = BASE_DIR / ".env"
+ENV_PATH = config.PROJECT_DIR / ".env"
 load_dotenv(ENV_PATH)
 
 SECRET_ID = os.getenv("GC_SECRET_ID")
@@ -15,9 +15,7 @@ SECRET_KEY = os.getenv("GC_SECRET_KEY")
 ACCOUNT_ID = os.getenv("GC_ACCOUNT_ID")
 
 # Setup paths
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-DB_PATH = DATA_DIR / "transactions.db"
+DB_PATH = Path(config.DATA_DIR) / "transactions.db"
 
 # Get access token from API
 access_token = get_access_token(SECRET_ID, SECRET_KEY)
@@ -63,4 +61,4 @@ for tx in transactions:
 conn.commit()
 conn.close()
 
-print(f"✅ Inserted {new_entries} new transactions.")
+print(f"Inserted {new_entries} new transactions.")

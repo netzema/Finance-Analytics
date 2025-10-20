@@ -2,10 +2,11 @@ from pathlib import Path
 import polars as pl
 
 import constants
+import config
 
 # Config
-DEFAULT_PATH = Path(constants.SAVINGS_CSV_PATH)
-SAV_PATH = Path(constants.SAVINGS_CSV_PROC_PATH)
+DEFAULT_PATH = Path(config.DATA_DIR, config.SAVINGS_CSV_FILE_NAME)
+SAV_PATH = Path(config.DATA_DIR, config.SAVINGS_CSV_PROC_FILE_NAME)
 
 # German -> English column map
 COLMAP = {

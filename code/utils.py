@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 import requests
 from classification_utils import classify_transaction
+import config
 
 def get_access_token(secret_id: str, secret_key: str) -> str:
     url = "https://bankaccountdata.gocardless.com/api/v2/token/new/"
@@ -143,7 +144,7 @@ def load_data(account: str) -> pl.DataFrame:
     Params:
         account (str): Any of "Silvia", "Hansi"
     '''
-    df = pl.read_csv(f"../data/{account}_konto.csv", try_parse_dates=True)
+    df = pl.read_csv(f"{config.DATA_DIR}/{account}_konto.csv", try_parse_dates=True)
 
     df = df.rename({
         "Buchungsdatum": "bookingDate",
@@ -164,8 +165,7 @@ def load_data(account: str) -> pl.DataFrame:
 def load_account_data(accounts):
     dfs = []
     if "Daniel" in accounts:
-        BASE_DIR = Path(__file__).resolve().parent.parent
-        DB_PATH = BASE_DIR / "data" / "transactions.db"
+        DB_PATH = Path(config.DATA_DIR) / "transactions.db"
         df_conn = sqlite3.connect(DB_PATH)
         df_daniel = pl.read_database("SELECT * FROM transactions", df_conn)
         df_conn.close()

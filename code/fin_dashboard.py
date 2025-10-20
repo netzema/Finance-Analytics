@@ -10,6 +10,7 @@ from dash import html, dcc, Input, Output, ctx, dash_table
 import dash_bootstrap_components as dbc
 from utils import *
 import constants as constants
+import config
 
 today = pd.Timestamp.today()
 
@@ -344,7 +345,7 @@ def update_dashboard(selected_accounts, selected_month, blur_values):
 
     # Savings integration
     # External movements from savings CSV
-    sav_ext = load_savings_csv(constants.SAVINGS_CSV_PROC_PATH).filter(
+    sav_ext = load_savings_csv(Path(config.DATA_DIR, config.SAVINGS_CSV_PROC_FILE_NAME)).filter(
         (pl.col("bookingDate").dt.month() <= selected_month.month) &
         (pl.col("bookingDate").dt.year() <= selected_month.year)
     ).rename({"amount": "delta"})
